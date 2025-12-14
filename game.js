@@ -1,8 +1,9 @@
-// Proste pionowe parkour demo - wersja bez kolców, z oddzielną kamerą, spawn na środku platformy
+// Proste pionowe parkour demo - kamera w camera.js, skok +10%, camera focus po spawnie
 (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
 
+  let W = 0, H = 0;
   function resize() {
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.floor(canvas.clientWidth * dpr);
@@ -11,7 +12,7 @@
 
     W = canvas.clientWidth;
     H = canvas.clientHeight;
-    // zainicjuj kamerę przy każdej zmianie rozmiaru (follow ratio możesz dopasować)
+    // zainicjuj kamerę przy każdej zmianie rozmiaru
     if (window.camera && typeof window.camera.init === 'function') {
       window.camera.init(H, 0.45);
     }
@@ -19,11 +20,8 @@
   window.addEventListener('resize', resize);
   resize();
 
-  let W = canvas.clientWidth;
-  let H = canvas.clientHeight;
-
-  // Camera (z camera.js) - używamy globalnego obiektu camera
-  const cam = window.camera || { y: 0, update: () => {} };
+  // Camera (z camera.js)
+  const cam = window.camera || { y: 0, update: () => {}, focus: () => {} };
   cam.init(H, 0.45);
 
   const player = {
@@ -39,7 +37,7 @@
   };
 
   const gravity = 0.5;
-  // Silniejszy ślizg (o ~2.5% mocniej niż wcześniej)
+  // Ślizg ~2.5% silniejszy (bez zmian)
   const friction = 0.960375;
   const slideBoost = 1.6;
 
@@ -53,13 +51,12 @@
 
   function spawnInitialPlatforms() {
     platforms.length = 0;
-    // start platforma poniżej/na dole ekranu (ale gracz spawnuje na jej środku)
+    // start platforma na dole widoku
     let y = H - 40;
-    // duża startowa platforma (na środku)
     const startW = 220;
     const startX = Math.max(10, (W - startW) / 2);
     platforms.push({ x: startX, y: y, w: startW, h: 16 });
-    // ustaw gracza na środku tej platformy
+    // ustaw gracza dokładnie na środku startowej platformy
     player.x = startX + startW / 2;
     player.y = y - player.r;
     for (let i = 0; i < 20; i++) {
@@ -74,7 +71,9 @@
     platforms.push({ x, y, w, h: 14 });
   }
 
+  // Najpierw wygeneruj platformy, potem ustaw kamerę na graczu (focus), by nie ginąć
   spawnInitialPlatforms();
+  cam.focus(player.y);
 
   // sterowanie
   const keys = {};
@@ -101,8 +100,8 @@
     deadBlink = 0;
     // odtwórz platformy i umieść gracza na środku startowej platformy
     spawnInitialPlatforms();
-    // ustaw kamerę tak, by widzieć start
-    cam.y = player.y - H * 0.45;
+    // ustaw kamerę natychmiast na graczu, żeby nie zginąć od razu
+    cam.focus(player.y);
     player.vx = 0; player.vy = 0;
     player.rotation = 0; player.angularVelocity = 0;
     score = 0;
@@ -129,8 +128,9 @@
 
     // grawitacja i skok
     player.vy += gravity;
+    // Skok zwiększony o 10% (był -10.5, teraz -11.55)
     if ((keys[' '] || keys['space']) && player.grounded) {
-      player.vy = -10.5;
+      player.vy = -10.5 * 1.10; // = -11.55
       player.grounded = false;
       player.angularVelocity = -0.45 * (player.vx >= 0 ? 1 : -1);
     }
@@ -189,7 +189,7 @@
       return;
     }
 
-    // wynik - wysokość gracza (możesz zmienić na camera.y jeśli wolisz)
+    // wynik - wysokość gracza
     score = Math.max(score, Math.floor(player.y));
   }
 
