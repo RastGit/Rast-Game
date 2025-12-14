@@ -1,9 +1,8 @@
-// Proste pionowe parkour demo
+// Proste pionowe parkour demo - poprawiona wersja
 (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
 
-  // Rozmiary canvas w pixels (wewnętrznie)
   function resize() {
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.floor(canvas.clientWidth * dpr);
@@ -13,58 +12,63 @@
   window.addEventListener('resize', resize);
   resize();
 
-  const W = canvas.clientWidth;
-  const H = canvas.clientHeight;
+  let W = canvas.clientWidth;
+  let H = canvas.clientHeight;
+  window.addEventListener('resize', () => { W = canvas.clientWidth; H = canvas.clientHeight; });
 
-  // Gra: kamera przewija się w górę z ustaloną prędkością -> wrażenie "idziemy cały czas"
-  const camera = { y: 0, speed: 1.2 }; // im większa speed, tym szybciej w górę
+  const camera = { y: 0, speed: 1.2 };
 
-  // Gracz
   const player = {
     x: W / 2,
-    y: H - 150, // world coords (większe y = dalej w dół)
+    y: H - 150,
     r: 18,
     vx: 0,
     vy: 0,
-    maxVx: 5,
+    maxVx: 5.5,
     grounded: false,
-    rotation: 0, // radians
+    rotation: 0,
     angularVelocity: 0
   };
 
-  // Fizyka
   const gravity = 0.5;
-  const friction = 0.98; // pozioma "lepkość" - niska -> lekko ślizga
-  const slideBoost = 1.6; // kiedy lądujemy dostajemy mały "ślizg" poziomy
+  const friction = 0.985; // delikatniejsze tarcie -> ślizg
+  const slideBoost = 1.6;
 
-  // Platformy - będą generowane "w górę"
-  const platforms = [];
+  // Platformy / przeszkody
+  let platforms = [];
+  let obstacles = []; // kolce i podobne (prostokąty/triang)
   const platformColor = '#5a9ad6';
-  const platformMinW = 80;
-  const platformMaxW = 260;
-  const gapMin = 70;
-  const gapMax = 170;
+  const platformMinW = 60;  // krótsze platformy
+  const platformMaxW = 140;
+  let gapMin = 40;   // mniejsze odstępy
+  let gapMax = 120;
 
-  // Generuj początkowe platformy
   function spawnInitialPlatforms() {
     platforms.length = 0;
+    obstacles.length = 0;
     let y = H - 40;
-    // platformu blisko poczatku
     platforms.push({ x: W / 2 - 100, y: y, w: 200, h: 16 });
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 20; i++) {
       y -= (Math.random() * (gapMax - gapMin) + gapMin);
       createPlatformAt(y);
     }
   }
+
   function createPlatformAt(y) {
     const w = Math.random() * (platformMaxW - platformMinW) + platformMinW;
     const x = Math.random() * (W - w - 20) + 10;
     platforms.push({ x, y, w, h: 14 });
+    // czasem dodaj kolce na platformie (25% szansy)
+    if (Math.random() < 0.25) {
+      const sw = Math.min(26, Math.max(12, Math.random() * 28));
+      const sx = x + Math.random() * Math.max(0, w - sw);
+      obstacles.push({ x: sx, y: y - 12, w: sw, h: 12, type: 'spike' });
+    }
   }
 
   spawnInitialPlatforms();
 
-  // Sterowanie
+  // sterowanie
   const keys = {};
   window.addEventListener('keydown', e => {
     keys[e.key.toLowerCase()] = true;
@@ -74,147 +78,194 @@
     keys[e.key.toLowerCase()] = false;
   });
 
-  // UI przyciski mobilne
   document.getElementById('left').addEventListener('pointerdown', () => keys['arrowleft']=keys['a']=true);
   document.getElementById('left').addEventListener('pointerup',   () => keys['arrowleft']=keys['a']=false);
   document.getElementById('right').addEventListener('pointerdown', () => keys['arrowright']=keys['d']=true);
   document.getElementById('right').addEventListener('pointerup',   () => keys['arrowright']=keys['d']=false);
   document.getElementById('jump').addEventListener('pointerdown', () => { keys[' ']=true; setTimeout(()=>keys[' ']=false, 120); });
 
-  // Prosty HUD
   let score = 0;
+  let deadTimer = 0;
+  let deadBlink = 0;
 
-  // Główna pętla
+  function respawn() {
+    // prosty reset gry po śmierci
+    deadTimer = 60; // krótka pauza
+    deadBlink = 0;
+    camera.y = 0;
+    player.x = W / 2;
+    player.y = H - 150;
+    player.vx = 0; player.vy = 0;
+    player.rotation = 0; player.angularVelocity = 0;
+    score = 0;
+    spawnInitialPlatforms();
+  }
+
   let last = performance.now();
   function loop(t) {
     const dt = Math.min(40, t - last);
     last = t;
-    update(dt / 16.67); // ~frame normalization
+    update(dt / 16.67);
     draw();
     requestAnimationFrame(loop);
   }
 
   function update(delta) {
-    // Sterowanie poziome
+    if (deadTimer > 0) { deadTimer--; return; }
+
+    // wejście poziome
     const left = keys['arrowleft'] || keys['a'];
     const right = keys['arrowright'] || keys['d'];
-    if (left) player.vx -= 0.35;
-    if (right) player.vx += 0.35;
-    // ograniczenia prędkości
+    if (left) player.vx -= 0.38;
+    if (right) player.vx += 0.38;
     player.vx = Math.max(-player.maxVx, Math.min(player.maxVx, player.vx));
 
-    // Grawitacja i skakanie
+    // grawitacja i skok
     player.vy += gravity;
     if ((keys[' '] || keys['space']) && player.grounded) {
-      player.vy = -10; // skok
+      player.vy = -10.5;
       player.grounded = false;
-      // drobny "obrót" podczas skoku
-      player.angularVelocity = -0.4 * (player.vx >= 0 ? 1 : -1);
+      player.angularVelocity = -0.45 * (player.vx >= 0 ? 1 : -1);
     }
 
-    // Zastosuj ruch
+    // ruch
     player.x += player.vx;
     player.y += player.vy;
 
-    // Krawędzie ekranu -> ogranicz i odbij lekko
+    // krawędzie
     if (player.x < player.r) { player.x = player.r; player.vx *= -0.2; }
     if (player.x > W - player.r) { player.x = W - player.r; player.vx *= -0.2; }
 
-    // Kamera: automatyczne przesuwanie w górę
+    // kamera
     camera.y += camera.speed;
 
-    // Aktualizuj rotację (spin)
-    player.rotation += player.angularVelocity;
-    player.angularVelocity *= 0.95; // damping rotacji
+    // zapobiegaj wychodzeniu ponad górną krawędź
+    const playerScreenY = player.y - camera.y;
+    if (playerScreenY < player.r) {
+      player.y = camera.y + player.r;
+      player.vy = 0;
+    }
 
-    // Kolizje z platformami
+    // rotacje
+    player.rotation += player.angularVelocity;
+    player.angularVelocity *= 0.95;
+
+    // kolizje z platformami
     player.grounded = false;
-    // Sprawdzamy kolizje z platformami względem kamery
     for (let p of platforms) {
-      const pyScreen = p.y - camera.y; // pozycja platformy na ekranie
-      const nextY = player.y;
-      // proste AABB vs circle (tylko góra platformy)
+      // prosty test: czy gracz stoi na górze platformy
       const withinX = player.x + player.r > p.x && player.x - player.r < p.x + p.w;
       const playerBottom = player.y + player.r;
       const platformTop = p.y;
-      // Jeśli gracz nad platformą i spada na nią
       if (withinX && playerBottom > platformTop && playerBottom - player.vy <= platformTop + 1) {
-        // ląduje
         player.y = platformTop - player.r;
-        // Jeśli prędkość pionowa wskazuje, że faktycznie był upadek
         if (player.vy > 2) {
-          // lekki slide i spin przy lądowaniu
           const slideDir = Math.sign(player.vx) || (Math.random() < 0.5 ? -1 : 1);
           player.vx += slideDir * slideBoost * 0.3;
-          player.angularVelocity += 0.8 * slideDir; // spin
+          player.angularVelocity += 0.8 * slideDir;
         }
         player.vy = 0;
         player.grounded = true;
       }
     }
 
-    // Zamień platformy, które wyszły poza ekran (na dole), i generuj nowe w górę
-    // Usuwamy platformy, które są za daleko w dół (wyżej od kamery) -> y - camera.y < -200
+    // kolizje z kolcami (obstacles)
+    for (let o of obstacles) {
+      // prosty AABB-circle check (przybliżenie)
+      if (player.x + player.r > o.x && player.x - player.r < o.x + o.w) {
+        if (player.y + player.r > o.y) {
+          // trafił w kolce -> zgon i restart
+          respawn();
+          return;
+        }
+      }
+    }
+
+    // usuwaj platformy/obiekty które są już bardzo poniżej ekranu
     while (platforms.length && platforms[0].y - camera.y > H + 300) {
       platforms.shift();
     }
-    // Dodaj nowe platformy u góry (mniejsze y)
-    while (platforms.length < 14) {
+    obstacles = obstacles.filter(o => !(o.y - camera.y > H + 300));
+
+    // generuj nowe platformy u góry — dopóki najwyższa jest zbyt blisko ekranu
+    while (platforms.length === 0 || platforms[platforms.length - 1].y - camera.y > -320) {
       const lastY = platforms.length ? platforms[platforms.length - 1].y : H - 40;
-      let newY = lastY - (Math.random() * (gapMax - gapMin) + gapMin);
+      const newY = lastY - (Math.random() * (gapMax - gapMin) + gapMin);
       createPlatformAt(newY);
     }
 
-    // Delikatne tarcie poziome -> efekt ślizgania
+    // tarcie poziome
     player.vx *= friction;
 
-    // Score: jak daleko poszliśmy (używamy camera.y)
+    // śmierć przy upadku pod ekran
+    if (player.y - camera.y > H + 120) {
+      respawn();
+      return;
+    }
+
+    // wynik
     score = Math.max(score, Math.floor(camera.y));
   }
 
   function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Tło gradient (dynamiczne)
     const grad = ctx.createLinearGradient(0, 0, 0, H);
     grad.addColorStop(0, '#e8fbff');
     grad.addColorStop(1, '#fff');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
 
-    // Rysuj platformy
+    // rysuj platformy
     ctx.fillStyle = platformColor;
     ctx.strokeStyle = 'rgba(0,0,0,0.08)';
     ctx.lineWidth = 1;
     for (let p of platforms) {
       const sy = p.y - camera.y;
-      if (sy < -200 || sy > H + 200) continue; // poza ekranem
+      if (sy < -300 || sy > H + 300) continue;
       ctx.beginPath();
       roundRect(ctx, p.x, sy, p.w, p.h, 6);
       ctx.fill();
       ctx.stroke();
     }
 
-    // Rysuj gracza jako okrąg z rotacją i "cieniem"
+    // rysuj kolce
+    for (let o of obstacles) {
+      const sy = o.y - camera.y;
+      if (sy < -200 || sy > H + 200) continue;
+      if (o.type === 'spike') {
+        // rysujemy triagle(s) jako kolce
+        const spikesCount = Math.max(1, Math.floor(o.w / 8));
+        const sw = o.w / spikesCount;
+        ctx.fillStyle = '#222';
+        for (let i = 0; i < spikesCount; i++) {
+          const sx = o.x + i * sw;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy + o.h);
+          ctx.lineTo(sx + sw / 2, sy);
+          ctx.lineTo(sx + sw, sy + o.h);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+    }
+
+    // cień gracza
     const sx = player.x;
     const sy = player.y - camera.y;
-
-    // cień
     ctx.beginPath();
     ctx.ellipse(sx, sy + player.r + 8, player.r * 1.05, player.r * 0.45, 0, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(0,0,0,0.12)';
     ctx.fill();
 
-    // postać (okrąg) z obrotem graficznym
+    // postać
     ctx.save();
     ctx.translate(sx, sy);
     ctx.rotate(player.rotation);
-    // kolor w zależności od stanu (w powietrzu vs na ziemi)
     ctx.fillStyle = player.grounded ? '#ff5656' : '#ff9a9a';
     ctx.beginPath();
     ctx.arc(0, 0, player.r, 0, Math.PI * 2);
     ctx.fill();
-    // "oczy" - dla lepszego efektu obrotu
     ctx.fillStyle = '#fff';
     ctx.beginPath();
     ctx.arc(6, -6, 4, 0, Math.PI * 2);
@@ -225,26 +276,32 @@
     ctx.fill();
     ctx.restore();
 
-    // HUD - score
+    // HUD
     ctx.fillStyle = '#064e77';
     ctx.font = '16px system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.fillText('Score: ' + Math.floor(score), 12, 24);
 
-    // Instrukcja mała jeśli blisko początku
     if (camera.y < 200) {
       ctx.fillStyle = 'rgba(5,50,90,0.06)';
       ctx.fillRect(8, 32, W - 16, 48);
       ctx.fillStyle = '#064e77';
       ctx.font = '14px system-ui, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Celem jest iść w górę. Steruj: ← →, skok: Spacja', W/2, 60);
+      ctx.fillText('Celem jest iść w górę. Uważaj na kolce!', W/2, 60);
+    }
+
+    if (deadTimer > 0) {
+      // prosty efekt "flash" przy śmierci
+      ctx.fillStyle = `rgba(200,30,30,${0.12 + 0.08 * Math.sin(deadBlink)})`;
+      ctx.fillRect(0,0,W,H);
+      deadBlink += 0.3;
     }
   }
 
-  // Helper - zaokrąglony prostokąt
   function roundRect(ctx, x, y, w, h, r) {
     const radius = r;
+    ctx.beginPath();
     ctx.moveTo(x + radius, y);
     ctx.lineTo(x + w - radius, y);
     ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
@@ -254,8 +311,8 @@
     ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
     ctx.lineTo(x, y + radius);
     ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
   }
 
-  // Start
   requestAnimationFrame(loop);
 })();
