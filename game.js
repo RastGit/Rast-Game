@@ -1,4 +1,4 @@
-// Proste pionowe parkour demo - poprawiona wersja
+// Proste pionowe parkour demo - zmodyfikowana wersja (kamera podąża za postacią, platformy niżej, silniejszy ślizg)
 (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -16,7 +16,7 @@
   let H = canvas.clientHeight;
   window.addEventListener('resize', () => { W = canvas.clientWidth; H = canvas.clientHeight; });
 
-  const camera = { y: 0, speed: 1.2 };
+  const camera = { y: 0 };
 
   const player = {
     x: W / 2,
@@ -31,12 +31,13 @@
   };
 
   const gravity = 0.5;
-  const friction = 0.985; // delikatniejsze tarcie -> ślizg
+  // Zwiększony ślizg o ~2.5% (0.985 * 0.975 = ~0.9604)
+  const friction = 0.960375;
   const slideBoost = 1.6;
 
   // Platformy / przeszkody
   let platforms = [];
-  let obstacles = []; // kolce i podobne (prostokąty/triang)
+  let obstacles = []; // kolce
   const platformColor = '#5a9ad6';
   const platformMinW = 60;  // krótsze platformy
   const platformMaxW = 140;
@@ -46,7 +47,9 @@
   function spawnInitialPlatforms() {
     platforms.length = 0;
     obstacles.length = 0;
-    let y = H - 40;
+    // start niżej (platforma startowa poniżej dolnej krawędzi widoku)
+    let y = H + 60;
+    // duża platforma startowa
     platforms.push({ x: W / 2 - 100, y: y, w: 200, h: 16 });
     for (let i = 0; i < 20; i++) {
       y -= (Math.random() * (gapMax - gapMin) + gapMin);
@@ -89,8 +92,7 @@
   let deadBlink = 0;
 
   function respawn() {
-    // prosty reset gry po śmierci
-    deadTimer = 60; // krótka pauza
+    deadTimer = 60;
     deadBlink = 0;
     camera.y = 0;
     player.x = W / 2;
@@ -132,14 +134,18 @@
     player.x += player.vx;
     player.y += player.vy;
 
-    // krawędzie
+    // krawędzie poziome
     if (player.x < player.r) { player.x = player.r; player.vx *= -0.2; }
     if (player.x > W - player.r) { player.x = W - player.r; player.vx *= -0.2; }
 
-    // kamera
-    camera.y += camera.speed;
+    // kamera: teraz podąża za postacią (smooth follow)
+    // followOffset określa pozycję postaci na ekranie (tu ~45% od góry)
+    const followOffset = H * 0.45;
+    const targetCameraY = player.y - followOffset;
+    // płynne podążanie (lerp)
+    camera.y += (targetCameraY - camera.y) * 0.08;
 
-    // zapobiegaj wychodzeniu ponad górną krawędź
+    // zapobiegaj wychodzeniu nad górną krawędź ekranu
     const playerScreenY = player.y - camera.y;
     if (playerScreenY < player.r) {
       player.y = camera.y + player.r;
@@ -153,7 +159,6 @@
     // kolizje z platformami
     player.grounded = false;
     for (let p of platforms) {
-      // prosty test: czy gracz stoi na górze platformy
       const withinX = player.x + player.r > p.x && player.x - player.r < p.x + p.w;
       const playerBottom = player.y + player.r;
       const platformTop = p.y;
@@ -171,10 +176,8 @@
 
     // kolizje z kolcami (obstacles)
     for (let o of obstacles) {
-      // prosty AABB-circle check (przybliżenie)
       if (player.x + player.r > o.x && player.x - player.r < o.x + o.w) {
         if (player.y + player.r > o.y) {
-          // trafił w kolce -> zgon i restart
           respawn();
           return;
         }
@@ -187,14 +190,14 @@
     }
     obstacles = obstacles.filter(o => !(o.y - camera.y > H + 300));
 
-    // generuj nowe platformy u góry — dopóki najwyższa jest zbyt blisko ekranu
+    // generuj nowe platformy u góry (gdy najwyższa zbliża się do widoku)
     while (platforms.length === 0 || platforms[platforms.length - 1].y - camera.y > -320) {
       const lastY = platforms.length ? platforms[platforms.length - 1].y : H - 40;
       const newY = lastY - (Math.random() * (gapMax - gapMin) + gapMin);
       createPlatformAt(newY);
     }
 
-    // tarcie poziome
+    // tarcie poziome (ślizg)
     player.vx *= friction;
 
     // śmierć przy upadku pod ekran
@@ -204,7 +207,7 @@
     }
 
     // wynik
-    score = Math.max(score, Math.floor(camera.y));
+    score = Math.max(score, Math.floor(player.y)); // można użyć camera.y, używam player.y żeby wynik odczytywał jak wysoko doszedłeś
   }
 
   function draw() {
@@ -234,7 +237,6 @@
       const sy = o.y - camera.y;
       if (sy < -200 || sy > H + 200) continue;
       if (o.type === 'spike') {
-        // rysujemy triagle(s) jako kolce
         const spikesCount = Math.max(1, Math.floor(o.w / 8));
         const sw = o.w / spikesCount;
         ctx.fillStyle = '#222';
@@ -292,7 +294,6 @@
     }
 
     if (deadTimer > 0) {
-      // prosty efekt "flash" przy śmierci
       ctx.fillStyle = `rgba(200,30,30,${0.12 + 0.08 * Math.sin(deadBlink)})`;
       ctx.fillRect(0,0,W,H);
       deadBlink += 0.3;
