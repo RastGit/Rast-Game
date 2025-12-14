@@ -1,4 +1,6 @@
-// Proste pionowe parkour demo - game.js z miękkimi ograniczeniami bocznymi (brak "ścian", ale wejście blokowane)
+// game.js - zintegrowane z points.js i poprawioną śmiercią (giniesz tylko jeśli bardzo poniżej najniższej platformy)
+// Kamera: camera.js (globalne window.camera), index.html ładuje points.js przed tym plikiem
+
 (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -17,11 +19,11 @@
   window.addEventListener('resize', resize);
   resize();
 
-  // Camera (z camera.js)
+  // camera
   const cam = window.camera || { y: 0, update: () => {}, focus: () => {} };
   cam.init(H, 0.45);
 
-  // Gracz
+  // player
   const player = {
     x: W / 2,
     y: H - 150,
@@ -38,7 +40,7 @@
   const friction = 0.960375;
   const slideBoost = 1.6;
 
-  // Platformy
+  // platforms
   let platforms = [];
   const platformColor = '#5a9ad6';
   const platformMinW = 60;
@@ -52,7 +54,7 @@
     const startW = 220;
     const startX = Math.max(10, (W - startW) / 2);
     platforms.push({ x: startX, y: y, w: startW, h: 16 });
-    // spawn na środku startowej platformy
+    // spawn player center of start
     player.x = startX + startW / 2;
     player.y = y - player.r;
     player.vx = 0;
@@ -63,44 +65,55 @@
     }
   }
 
+  // pickup spawn probabilities:
+  // minus10: 9%, x2: 6%, x3: 3% (total 18%)
   function createPlatformAt(y) {
     const w = Math.random() * (platformMaxW - platformMinW) + platformMinW;
     const x = Math.random() * (W - w - 20) + 10;
-    platforms.push({ x, y, w, h: 14 });
+    const p = { x, y, w, h: 14, collected: false };
+    // spawn pickup with chance
+    const r = Math.random();
+    if (r < 0.09) {
+      p.pickup = { type: 'minus10' };
+    } else if (r < 0.09 + 0.06) {
+      p.pickup = { type: 'x2' };
+    } else if (r < 0.09 + 0.06 + 0.03) {
+      p.pickup = { type: 'x3' };
+    }
+    platforms.push(p);
   }
 
-  // --- Wbudowany AntyBug (logika naprawcza umieszczona w game.js) ---
+  spawnInitialPlatforms();
+  cam.focus(player.y);
+
+  // init Points
+  if (window.Points && typeof window.Points.init === 'function') {
+    window.Points.init({ getNow: () => performance.now() / 1000 });
+  }
+
+  // AntyBug (embedded simplified as before) - keeps soft edges and stops sticky walls
   const AntyBug = {
-    // konfiguracja
     MAX_VY: 50,
-    MAX_VX_MULT: 3.0, // bezpieczny limit = player.maxVx * MULT
-    STUCK_FRAMES_THRESHOLD: Math.round(1.2 * 60), // ~1.2s
-    WALL_NUDGE_IMPULSE: 2.2,   // jednorazowy impuls poziomy przy odklejeniu
+    MAX_VX_MULT: 3.0,
+    STUCK_FRAMES_THRESHOLD: Math.round(1.2 * 60),
+    WALL_NUDGE_IMPULSE: 2.2,
     GAP_NUDGE_IMPULSE: 1.6,
-    MIN_MOVEMENT_TO_BE_FREE: 0.8, // px
+    MIN_MOVEMENT_TO_BE_FREE: 0.8,
     MIN_GAP_CLEAR: 2.5,
     NUDGE_COOLDOWN_FRAMES: 20,
-
-    // stan
     wallStuckCounter: 0,
     gapStuckCounter: 0,
-    prevX: 0,
-    prevY: 0,
+    prevX: player.x,
+    prevY: player.y,
     lastNudgeFrame: -9999,
     frameCounter: 0,
-
     init() {
-      this.wallStuckCounter = 0;
-      this.gapStuckCounter = 0;
-      this.prevX = player.x;
-      this.prevY = player.y;
-      this.lastNudgeFrame = -9999;
-      this.frameCounter = 0;
+      this.wallStuckCounter = 0; this.gapStuckCounter = 0;
+      this.prevX = player.x; this.prevY = player.y;
+      this.lastNudgeFrame = -9999; this.frameCounter = 0;
     },
-
     update(delta) {
       this.frameCounter += delta;
-      // safety: clamp ekstremalnych prędkości (bez zmiany p.vy poza clamp)
       const safeMaxVx = Math.max(8, (player.maxVx || 6) * this.MAX_VX_MULT);
       if (!Number.isFinite(player.vx) || Math.abs(player.vx) > safeMaxVx) {
         player.vx = Math.sign(player.vx || 1) * Math.min(Math.abs(player.vx || 0), safeMaxVx);
@@ -108,34 +121,23 @@
       if (!Number.isFinite(player.vy) || Math.abs(player.vy) > this.MAX_VY) {
         player.vy = Math.sign(player.vy || 1) * Math.min(Math.abs(player.vy || 0), this.MAX_VY);
       }
+      if (Math.abs(player.vx) > safeMaxVx * 0.6) { player.vx = 0; player.angularVelocity = 0; }
 
-      // jeśli po respawnie mamy podejrzanie dużą prędkość poziomą, wyzeruj ją
-      if (Math.abs(player.vx) > safeMaxVx * 0.6) {
-        player.vx = 0;
-        player.angularVelocity = 0;
-      }
-
-      // detekcja prawdziwego braku ruchu poziomego
       const movedX = Math.abs(player.x - this.prevX);
       const isMovingHorizontally = movedX > this.MIN_MOVEMENT_TO_BE_FREE;
-
-      // wykrywanie "dotyku" bocznej granicy obszaru gry - używane tylko do detekcji stuck
       const touchingLeftEdge = (player.x - player.r) <= 0 + 0.001;
       const touchingRightEdge = (player.x + player.r) >= W - 0.001;
       const touchingEdge = touchingLeftEdge || touchingRightEdge;
 
-      // zwiększ licznik tylko gdy dotyka krawędzi i praktycznie się nie rusza
       if (touchingEdge && !isMovingHorizontally) {
         this.wallStuckCounter += delta;
       } else {
         this.wallStuckCounter = 0;
       }
 
-      // jeśli przyklejenie trwa za długo -> jednorazowy nudge (impuls), bez modyfikowania p.vy
       if (this.wallStuckCounter >= this.STUCK_FRAMES_THRESHOLD) {
         if (this.frameCounter - this.lastNudgeFrame > this.NUDGE_COOLDOWN_FRAMES) {
           if (touchingLeftEdge) {
-            // delikatne przesunięcie i impuls do środka
             player.x = Math.max(player.r + this.MIN_GAP_CLEAR, player.x + 0.5);
             player.vx = Math.max(player.vx, this.WALL_NUDGE_IMPULSE);
           } else if (touchingRightEdge) {
@@ -148,7 +150,6 @@
         }
       }
 
-      // wykrywanie ciasnych szczelin między platformą a krawędzią obszaru gry
       let inNarrowGap = false;
       for (let i = 0; i < platforms.length; i++) {
         const pl = platforms[i];
@@ -157,22 +158,15 @@
         if (playerBottom < pl.y - 6 || playerTop > pl.y + pl.h + 6) continue;
         const gapLeft = pl.x;
         const gapRight = W - (pl.x + pl.w);
-        // wąska szczelina po lewej
         if (gapLeft >= 0 && gapLeft < player.r + 6 && player.x - player.r < pl.x + 6 && player.x < pl.x + 8) {
-          inNarrowGap = true;
-          this.gapStuckCounter += delta;
-          break;
+          inNarrowGap = true; this.gapStuckCounter += delta; break;
         }
-        // wąska szczelina po prawej
         if (gapRight >= 0 && gapRight < player.r + 6 && player.x + player.r > pl.x + pl.w - 6 && player.x > pl.x + pl.w - 8) {
-          inNarrowGap = true;
-          this.gapStuckCounter += delta;
-          break;
+          inNarrowGap = true; this.gapStuckCounter += delta; break;
         }
       }
       if (!inNarrowGap) this.gapStuckCounter = 0;
 
-      // jeśli wąska szczelina trwa zbyt długo -> jednorazowy nudge
       if (this.gapStuckCounter >= Math.round(this.STUCK_FRAMES_THRESHOLD * 0.5)) {
         if (this.frameCounter - this.lastNudgeFrame > this.NUDGE_COOLDOWN_FRAMES) {
           if (player.x < W * 0.5) {
@@ -188,36 +182,23 @@
         }
       }
 
-      // safety: jeśli bardzo poza światem poziomo -> respawn (ostrożnie)
       if ((player.x < -80 || player.x > W + 80)) {
         respawn();
       }
 
-      // zapamiętaj pozycję
-      this.prevX = player.x;
-      this.prevY = player.y;
+      this.prevX = player.x; this.prevY = player.y;
     }
   };
-  // --- koniec AntyBug ---
 
-  function spawnAndFocus() {
-    spawnInitialPlatforms();
-    cam.focus(player.y);
-    AntyBug.init();
-  }
+  AntyBug.init();
 
-  // init
-  spawnAndFocus();
-
-  // sterowanie
+  // controls
   const keys = {};
   window.addEventListener('keydown', e => {
     keys[e.key.toLowerCase()] = true;
     if (e.key === ' ' || e.key === 'Spacebar') e.preventDefault();
   });
-  window.addEventListener('keyup', e => {
-    keys[e.key.toLowerCase()] = false;
-  });
+  window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
   document.getElementById('left').addEventListener('pointerdown', () => keys['arrowleft']=keys['a']=true);
   document.getElementById('left').addEventListener('pointerup',   () => keys['arrowleft']=keys['a']=false);
@@ -230,18 +211,13 @@
   let deadBlink = 0;
 
   function respawn() {
-    deadTimer = 40;
-    deadBlink = 0;
-    // odtwórz platformy i umieść gracza na środku startowej platformy
+    deadTimer = 40; deadBlink = 0;
     spawnInitialPlatforms();
-    // natychmiast ustaw kamerę, żeby nie zginąć od razu
     cam.focus(player.y);
-    // reset prędkości by uniknąć "lecę w prawo"
-    player.vx = 0;
-    player.vy = 0;
-    player.rotation = 0;
-    player.angularVelocity = 0;
+    player.vx = 0; player.vy = 0;
+    player.rotation = 0; player.angularVelocity = 0;
     score = 0;
+    if (window.Points) { window.Points.activeMultiplier = { value: 1, expiresAt: 0 }; window.Points.points = 0; }
     AntyBug.init();
   }
 
@@ -263,7 +239,6 @@
     if (right) player.vx += 0.38;
     player.vx = Math.max(-player.maxVx, Math.min(player.maxVx, player.vx));
 
-    // grawitacja i skok (+10% już wprowadzone wcześniej)
     player.vy += gravity;
     if ((keys[' '] || keys['space']) && player.grounded) {
       player.vy = -10.5 * 1.10; // = -11.55
@@ -271,40 +246,35 @@
       player.angularVelocity = -0.45 * (player.vx >= 0 ? 1 : -1);
     }
 
-    // ruch
     player.x += player.vx;
     player.y += player.vy;
 
-    // -> MIĘKKIE OGRANICZENIE BOCZNE: nie rysujemy ścian, ale blokujemy wejście poza obszar
-    // jeśli gracz próbuje wyjść poza lewy/prawy brzeg, korygujemy pozycję i dajemy delikatny impuls przeciwny
-    const minX = player.r;
-    const maxX = W - player.r;
+    // MIĘKKIE OGRANICZENIE BOCZNE: blokuj wyjście i daj lekki impuls przeciwny
+    const minX = player.r; const maxX = W - player.r;
     if (player.x < minX) {
       player.x = minX;
-      // jeśli próbował dalej iść w lewo, nadamy mu niewielki impuls w prawo, zamiast trzymać go "przyklejonego"
       if (player.vx < 0) player.vx = 1.2;
     } else if (player.x > maxX) {
       player.x = maxX;
       if (player.vx > 0) player.vx = -1.2;
     }
 
-    // kamera
     cam.update(player.y);
 
-    // AntyBug: update (po ruchu/kolizjach poziomych, przed kolizjami platform) - zapobiega przyklejaniu, nudguje jeśli trzeba
+    // AntyBug update
     AntyBug.update(delta);
 
-    // rotacje
     player.rotation += player.angularVelocity;
     player.angularVelocity *= 0.95;
 
-    // kolizje z platformami (proste)
+    // collision with platforms - and awarding points/pickups (only once per platform)
     player.grounded = false;
     for (let p of platforms) {
       const withinX = player.x + player.r > p.x && player.x - player.r < p.x + p.w;
       const playerBottom = player.y + player.r;
       const platformTop = p.y;
       if (withinX && playerBottom > platformTop && playerBottom - player.vy <= platformTop + 1) {
+        // landed
         player.y = platformTop - player.r;
         if (player.vy > 2) {
           const slideDir = Math.sign(player.vx) || (Math.random() < 0.5 ? -1 : 1);
@@ -313,26 +283,33 @@
         }
         player.vy = 0;
         player.grounded = true;
+
+        // award points via Points manager
+        if (window.Points) window.Points.onLand(p);
       }
     }
 
-    // usuń stare platformy
-    while (platforms.length && platforms[0].y - cam.y > H + 300) {
+    // remove platforms which are far below camera (bigger margin to avoid removing all)
+    while (platforms.length && platforms[0].y - cam.y > H + 600) {
       platforms.shift();
     }
 
-    // generuj nowe platformy u góry
+    // generate new platforms above
     while (platforms.length === 0 || platforms[platforms.length - 1].y - cam.y > -320) {
       const lastY = platforms.length ? platforms[platforms.length - 1].y : H - 40;
       const newY = lastY - (Math.random() * (gapMax - gapMin) + gapMin);
       createPlatformAt(newY);
     }
 
-    // tarcie poziome
+    // friction
     player.vx *= friction;
 
-    // śmierć przy upadku pod ekran
-    if (player.y - cam.y > H + 120) {
+    // Points update
+    if (window.Points && typeof window.Points.update === 'function') window.Points.update(delta);
+
+    // death condition: only die if well below the lowest platform
+    const lowestPlatformY = platforms.length ? Math.max(...platforms.map(pl => pl.y)) : (player.y + 800);
+    if (player.y > lowestPlatformY + 350) {
       respawn();
       return;
     }
@@ -349,7 +326,7 @@
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
 
-    // rysuj platformy
+    // draw platforms and pickups
     ctx.fillStyle = platformColor;
     ctx.strokeStyle = 'rgba(0,0,0,0.08)';
     ctx.lineWidth = 1;
@@ -360,9 +337,36 @@
       roundRect(ctx, p.x, sy, p.w, p.h, 6);
       ctx.fill();
       ctx.stroke();
+
+      // pickup icon
+      if (p.pickup && !p.pickupCollected) {
+        const px = p.x + p.w / 2;
+        const py = sy - 10;
+        if (p.pickup.type === 'minus10') {
+          ctx.fillStyle = '#bb2222';
+          ctx.beginPath();
+          ctx.arc(px, py, 8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#fff';
+          ctx.font = '11px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('-10', px, py + 1);
+        } else if (p.pickup.type === 'x2' || p.pickup.type === 'x3') {
+          ctx.fillStyle = '#ffd24d';
+          ctx.beginPath();
+          ctx.arc(px, py, 9, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#333';
+          ctx.font = '12px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(p.pickup.type.toUpperCase(), px, py + 1);
+        }
+      }
     }
 
-    // cień gracza
+    // shadow
     const sx = player.x;
     const sy = player.y - cam.y;
     ctx.beginPath();
@@ -370,7 +374,7 @@
     ctx.fillStyle = 'rgba(0,0,0,0.12)';
     ctx.fill();
 
-    // postać
+    // player
     ctx.save();
     ctx.translate(sx, sy);
     ctx.rotate(player.rotation);
@@ -388,11 +392,15 @@
     ctx.fill();
     ctx.restore();
 
-    // HUD
-    ctx.fillStyle = '#064e77';
-    ctx.font = '16px system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('Score: ' + Math.floor(score), 12, 24);
+    // Points HUD (Points.draw will also draw points text; to avoid duplication Points.draw draws points)
+    if (window.Points && typeof window.Points.draw === 'function') {
+      window.Points.draw(ctx);
+    } else {
+      ctx.fillStyle = '#064e77';
+      ctx.font = '16px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('Points: 0', 12, 24);
+    }
 
     if (cam.y < 200) {
       ctx.fillStyle = 'rgba(5,50,90,0.06)';
@@ -400,7 +408,7 @@
       ctx.fillStyle = '#064e77';
       ctx.font = '14px system-ui, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Celem jest iść w górę. Startujesz na środku platformy.', W/2, 60);
+      ctx.fillText('Celem jest iść w górę. Zbieraj power-upy!', W/2, 60);
     }
 
     if (deadTimer > 0) {
