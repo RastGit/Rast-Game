@@ -1,4 +1,4 @@
-// Proste pionowe parkour demo - kamera w camera.js, skok +10%, camera focus po spawnie
+// Pełny game.js z integracją AntyBug (tylko fragmenty z modyfikacjami zaznaczone w komentarzach)
 (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -12,17 +12,12 @@
 
     W = canvas.clientWidth;
     H = canvas.clientHeight;
-    // zainicjuj kamerę przy każdej zmianie rozmiaru
-    if (window.camera && typeof window.camera.init === 'function') {
-      window.camera.init(H, 0.45);
-    }
+    if (window.camera && typeof window.camera.init === 'function') window.camera.init(H, 0.45);
   }
   window.addEventListener('resize', resize);
   resize();
 
-  // Camera (z camera.js)
   const cam = window.camera || { y: 0, update: () => {}, focus: () => {} };
-  cam.init(H, 0.45);
 
   const player = {
     x: W / 2,
@@ -37,11 +32,9 @@
   };
 
   const gravity = 0.5;
-  // Ślizg ~2.5% silniejszy (bez zmian)
   const friction = 0.960375;
   const slideBoost = 1.6;
 
-  // Platformy (bez przeszkód)
   let platforms = [];
   const platformColor = '#5a9ad6';
   const platformMinW = 60;
@@ -51,12 +44,11 @@
 
   function spawnInitialPlatforms() {
     platforms.length = 0;
-    // start platforma na dole widoku
     let y = H - 40;
     const startW = 220;
     const startX = Math.max(10, (W - startW) / 2);
     platforms.push({ x: startX, y: y, w: startW, h: 16 });
-    // ustaw gracza dokładnie na środku startowej platformy
+    // spawnujemy gracza dokładnie na środku startowej platformy
     player.x = startX + startW / 2;
     player.y = y - player.r;
     for (let i = 0; i < 20; i++) {
@@ -71,11 +63,27 @@
     platforms.push({ x, y, w, h: 14 });
   }
 
-  // Najpierw wygeneruj platformy, potem ustaw kamerę na graczu (focus), by nie ginąć
+  // generujemy platformy i ustawiamy kamerę
   spawnInitialPlatforms();
   cam.focus(player.y);
 
-  // sterowanie
+  // --- Integracja AntyBug: inicjalizacja ---
+  if (window.AntyBug && typeof window.AntyBug.init === 'function') {
+    try {
+      window.AntyBug.init(player, {
+        getWorldWidth: () => W,
+        getPlatforms: () => platforms,
+        respawn: () => { respawn(); } // przekazujemy ref do funkcji respawn
+      });
+    } catch (e) {
+      console.warn('AntyBug.init nie powiodło się:', e);
+    }
+  }
+  // --- koniec integracji AntyBug ---
+
+  // sterowanie, pętla, update/draw - reszta kodu jak wcześniej...
+  // (poniżej założyłem, że cały poprzedni game.js jest tu; w update() dodajemy wywołanie AntyBug.update(delta))
+
   const keys = {};
   window.addEventListener('keydown', e => {
     keys[e.key.toLowerCase()] = true;
@@ -98,9 +106,7 @@
   function respawn() {
     deadTimer = 40;
     deadBlink = 0;
-    // odtwórz platformy i umieść gracza na środku startowej platformy
     spawnInitialPlatforms();
-    // ustaw kamerę natychmiast na graczu, żeby nie zginąć od razu
     cam.focus(player.y);
     player.vx = 0; player.vy = 0;
     player.rotation = 0; player.angularVelocity = 0;
@@ -119,38 +125,36 @@
   function update(delta) {
     if (deadTimer > 0) { deadTimer--; return; }
 
-    // wejście poziome
     const left = keys['arrowleft'] || keys['a'];
     const right = keys['arrowright'] || keys['d'];
     if (left) player.vx -= 0.38;
     if (right) player.vx += 0.38;
     player.vx = Math.max(-player.maxVx, Math.min(player.maxVx, player.vx));
 
-    // grawitacja i skok
     player.vy += gravity;
-    // Skok zwiększony o 10% (był -10.5, teraz -11.55)
     if ((keys[' '] || keys['space']) && player.grounded) {
-      player.vy = -10.5 * 1.10; // = -11.55
+      player.vy = -10.5 * 1.10; // -11.55 (skok +10%)
       player.grounded = false;
       player.angularVelocity = -0.45 * (player.vx >= 0 ? 1 : -1);
     }
 
-    // ruch
     player.x += player.vx;
     player.y += player.vy;
 
-    // krawędzie poziome
     if (player.x < player.r) { player.x = player.r; player.vx *= -0.2; }
     if (player.x > W - player.r) { player.x = W - player.r; player.vx *= -0.2; }
 
-    // kamera: aktualizujemy, żeby podążała za graczem (camera.js)
     cam.update(player.y);
 
-    // rotacje
+    // --- Wywołanie AntyBug.update (integracja) ---
+    if (window.AntyBug && typeof window.AntyBug.update === 'function') {
+      try { window.AntyBug.update(delta); } catch (e) { /* ignoruj */ }
+    }
+    // --- koniec wywołania AntyBug ---
+
     player.rotation += player.angularVelocity;
     player.angularVelocity *= 0.95;
 
-    // kolizje z platformami (proste)
     player.grounded = false;
     for (let p of platforms) {
       const withinX = player.x + player.r > p.x && player.x - player.r < p.x + p.w;
@@ -168,28 +172,23 @@
       }
     }
 
-    // usuwaj platformy które są już bardzo poniżej ekranu
     while (platforms.length && platforms[0].y - cam.y > H + 300) {
       platforms.shift();
     }
 
-    // generuj nowe platformy u góry (gdy najwyższa zbliża się do widoku)
     while (platforms.length === 0 || platforms[platforms.length - 1].y - cam.y > -320) {
       const lastY = platforms.length ? platforms[platforms.length - 1].y : H - 40;
       const newY = lastY - (Math.random() * (gapMax - gapMin) + gapMin);
       createPlatformAt(newY);
     }
 
-    // tarcie poziome (ślizg)
     player.vx *= friction;
 
-    // śmierć przy upadku pod ekran
     if (player.y - cam.y > H + 120) {
       respawn();
       return;
     }
 
-    // wynik - wysokość gracza
     score = Math.max(score, Math.floor(player.y));
   }
 
@@ -202,7 +201,6 @@
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
 
-    // rysuj platformy
     ctx.fillStyle = platformColor;
     ctx.strokeStyle = 'rgba(0,0,0,0.08)';
     ctx.lineWidth = 1;
@@ -215,7 +213,6 @@
       ctx.stroke();
     }
 
-    // cień gracza
     const sx = player.x;
     const sy = player.y - cam.y;
     ctx.beginPath();
@@ -223,7 +220,6 @@
     ctx.fillStyle = 'rgba(0,0,0,0.12)';
     ctx.fill();
 
-    // postać
     ctx.save();
     ctx.translate(sx, sy);
     ctx.rotate(player.rotation);
@@ -241,7 +237,6 @@
     ctx.fill();
     ctx.restore();
 
-    // HUD
     ctx.fillStyle = '#064e77';
     ctx.font = '16px system-ui, sans-serif';
     ctx.textAlign = 'left';
