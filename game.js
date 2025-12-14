@@ -1,6 +1,4 @@
-// Proste pionowe parkour demo - game.js z wbudowanym AntyBug (naprawy)
-// Kamera w camera.js (globalne `camera`), index.html ma ładować camera.js przed tym plikiem.
-
+// Proste pionowe parkour demo - game.js z miękkimi ograniczeniami bocznymi (brak "ścian", ale wejście blokowane)
 (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -121,25 +119,26 @@
       const movedX = Math.abs(player.x - this.prevX);
       const isMovingHorizontally = movedX > this.MIN_MOVEMENT_TO_BE_FREE;
 
-      // wykrywanie dotyku ściany (z tolerancją)
-      const touchingLeft = (player.x - player.r) <= 0 + 0.001;
-      const touchingRight = (player.x + player.r) >= W - 0.001;
-      const touchingWall = touchingLeft || touchingRight;
+      // wykrywanie "dotyku" bocznej granicy obszaru gry - używane tylko do detekcji stuck
+      const touchingLeftEdge = (player.x - player.r) <= 0 + 0.001;
+      const touchingRightEdge = (player.x + player.r) >= W - 0.001;
+      const touchingEdge = touchingLeftEdge || touchingRightEdge;
 
-      // zwiększ licznik tylko gdy dotyka ściany i praktycznie się nie rusza
-      if (touchingWall && !isMovingHorizontally) {
+      // zwiększ licznik tylko gdy dotyka krawędzi i praktycznie się nie rusza
+      if (touchingEdge && !isMovingHorizontally) {
         this.wallStuckCounter += delta;
       } else {
         this.wallStuckCounter = 0;
       }
 
-      // jeśli przyklejenie trawa za długo -> jednorazowy nudge (impuls), bez modyfikowania p.vy
+      // jeśli przyklejenie trwa za długo -> jednorazowy nudge (impuls), bez modyfikowania p.vy
       if (this.wallStuckCounter >= this.STUCK_FRAMES_THRESHOLD) {
         if (this.frameCounter - this.lastNudgeFrame > this.NUDGE_COOLDOWN_FRAMES) {
-          if (touchingLeft) {
+          if (touchingLeftEdge) {
+            // delikatne przesunięcie i impuls do środka
             player.x = Math.max(player.r + this.MIN_GAP_CLEAR, player.x + 0.5);
             player.vx = Math.max(player.vx, this.WALL_NUDGE_IMPULSE);
-          } else if (touchingRight) {
+          } else if (touchingRightEdge) {
             player.x = Math.min(W - player.r - this.MIN_GAP_CLEAR, player.x - 0.5);
             player.vx = Math.min(player.vx, -this.WALL_NUDGE_IMPULSE);
           }
@@ -149,7 +148,7 @@
         }
       }
 
-      // wykrywanie ciasnych szczelin między platformą a ścianą
+      // wykrywanie ciasnych szczelin między platformą a krawędzią obszaru gry
       let inNarrowGap = false;
       for (let i = 0; i < platforms.length; i++) {
         const pl = platforms[i];
@@ -177,10 +176,10 @@
       if (this.gapStuckCounter >= Math.round(this.STUCK_FRAMES_THRESHOLD * 0.5)) {
         if (this.frameCounter - this.lastNudgeFrame > this.NUDGE_COOLDOWN_FRAMES) {
           if (player.x < W * 0.5) {
-            player.vx = Math.max(player.vx, this.GAP_NUDGE_IMPULSE || this.GAP_NUDGE_IMPULSE);
+            player.vx = Math.max(player.vx, this.GAP_NUDGE_IMPULSE);
             player.x = Math.min(W - player.r - this.MIN_GAP_CLEAR, Math.max(player.x, player.r + this.MIN_GAP_CLEAR + 0.5));
           } else {
-            player.vx = Math.min(player.vx, -this.GAP_NUDGE_IMPULSE || -this.GAP_NUDGE_IMPULSE);
+            player.vx = Math.min(player.vx, -this.GAP_NUDGE_IMPULSE);
             player.x = Math.max(player.x, player.r + this.MIN_GAP_CLEAR + 0.5);
           }
           player.angularVelocity = 0;
@@ -276,9 +275,18 @@
     player.x += player.vx;
     player.y += player.vy;
 
-    // krawędzie poziome (kolizja ze ścianami) - ustawia pozycję ale NIE zmienia vy
-    if (player.x < player.r) { player.x = player.r; player.vx *= -0.2; }
-    if (player.x > W - player.r) { player.x = W - player.r; player.vx *= -0.2; }
+    // -> MIĘKKIE OGRANICZENIE BOCZNE: nie rysujemy ścian, ale blokujemy wejście poza obszar
+    // jeśli gracz próbuje wyjść poza lewy/prawy brzeg, korygujemy pozycję i dajemy delikatny impuls przeciwny
+    const minX = player.r;
+    const maxX = W - player.r;
+    if (player.x < minX) {
+      player.x = minX;
+      // jeśli próbował dalej iść w lewo, nadamy mu niewielki impuls w prawo, zamiast trzymać go "przyklejonego"
+      if (player.vx < 0) player.vx = 1.2;
+    } else if (player.x > maxX) {
+      player.x = maxX;
+      if (player.vx > 0) player.vx = -1.2;
+    }
 
     // kamera
     cam.update(player.y);
