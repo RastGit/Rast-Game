@@ -1,4 +1,4 @@
-// Proste pionowe parkour demo - zmodyfikowana wersja (kamera podąża za postacią, platformy niżej, silniejszy ślizg)
+// Proste pionowe parkour demo - wersja bez kolców, z oddzielną kamerą, spawn na środku platformy
 (() => {
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
@@ -8,15 +8,23 @@
     canvas.width = Math.floor(canvas.clientWidth * dpr);
     canvas.height = Math.floor(canvas.clientHeight * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    W = canvas.clientWidth;
+    H = canvas.clientHeight;
+    // zainicjuj kamerę przy każdej zmianie rozmiaru (follow ratio możesz dopasować)
+    if (window.camera && typeof window.camera.init === 'function') {
+      window.camera.init(H, 0.45);
+    }
   }
   window.addEventListener('resize', resize);
   resize();
 
   let W = canvas.clientWidth;
   let H = canvas.clientHeight;
-  window.addEventListener('resize', () => { W = canvas.clientWidth; H = canvas.clientHeight; });
 
-  const camera = { y: 0 };
+  // Camera (z camera.js) - używamy globalnego obiektu camera
+  const cam = window.camera || { y: 0, update: () => {} };
+  cam.init(H, 0.45);
 
   const player = {
     x: W / 2,
@@ -31,26 +39,29 @@
   };
 
   const gravity = 0.5;
-  // Zwiększony ślizg o ~2.5% (0.985 * 0.975 = ~0.9604)
+  // Silniejszy ślizg (o ~2.5% mocniej niż wcześniej)
   const friction = 0.960375;
   const slideBoost = 1.6;
 
-  // Platformy / przeszkody
+  // Platformy (bez przeszkód)
   let platforms = [];
-  let obstacles = []; // kolce
   const platformColor = '#5a9ad6';
-  const platformMinW = 60;  // krótsze platformy
+  const platformMinW = 60;
   const platformMaxW = 140;
-  let gapMin = 40;   // mniejsze odstępy
+  let gapMin = 40;
   let gapMax = 120;
 
   function spawnInitialPlatforms() {
     platforms.length = 0;
-    obstacles.length = 0;
-    // start niżej (platforma startowa poniżej dolnej krawędzi widoku)
-    let y = H + 60;
-    // duża platforma startowa
-    platforms.push({ x: W / 2 - 100, y: y, w: 200, h: 16 });
+    // start platforma poniżej/na dole ekranu (ale gracz spawnuje na jej środku)
+    let y = H - 40;
+    // duża startowa platforma (na środku)
+    const startW = 220;
+    const startX = Math.max(10, (W - startW) / 2);
+    platforms.push({ x: startX, y: y, w: startW, h: 16 });
+    // ustaw gracza na środku tej platformy
+    player.x = startX + startW / 2;
+    player.y = y - player.r;
     for (let i = 0; i < 20; i++) {
       y -= (Math.random() * (gapMax - gapMin) + gapMin);
       createPlatformAt(y);
@@ -61,12 +72,6 @@
     const w = Math.random() * (platformMaxW - platformMinW) + platformMinW;
     const x = Math.random() * (W - w - 20) + 10;
     platforms.push({ x, y, w, h: 14 });
-    // czasem dodaj kolce na platformie (25% szansy)
-    if (Math.random() < 0.25) {
-      const sw = Math.min(26, Math.max(12, Math.random() * 28));
-      const sx = x + Math.random() * Math.max(0, w - sw);
-      obstacles.push({ x: sx, y: y - 12, w: sw, h: 12, type: 'spike' });
-    }
   }
 
   spawnInitialPlatforms();
@@ -92,15 +97,15 @@
   let deadBlink = 0;
 
   function respawn() {
-    deadTimer = 60;
+    deadTimer = 40;
     deadBlink = 0;
-    camera.y = 0;
-    player.x = W / 2;
-    player.y = H - 150;
+    // odtwórz platformy i umieść gracza na środku startowej platformy
+    spawnInitialPlatforms();
+    // ustaw kamerę tak, by widzieć start
+    cam.y = player.y - H * 0.45;
     player.vx = 0; player.vy = 0;
     player.rotation = 0; player.angularVelocity = 0;
     score = 0;
-    spawnInitialPlatforms();
   }
 
   let last = performance.now();
@@ -138,25 +143,14 @@
     if (player.x < player.r) { player.x = player.r; player.vx *= -0.2; }
     if (player.x > W - player.r) { player.x = W - player.r; player.vx *= -0.2; }
 
-    // kamera: teraz podąża za postacią (smooth follow)
-    // followOffset określa pozycję postaci na ekranie (tu ~45% od góry)
-    const followOffset = H * 0.45;
-    const targetCameraY = player.y - followOffset;
-    // płynne podążanie (lerp)
-    camera.y += (targetCameraY - camera.y) * 0.08;
-
-    // zapobiegaj wychodzeniu nad górną krawędź ekranu
-    const playerScreenY = player.y - camera.y;
-    if (playerScreenY < player.r) {
-      player.y = camera.y + player.r;
-      player.vy = 0;
-    }
+    // kamera: aktualizujemy, żeby podążała za graczem (camera.js)
+    cam.update(player.y);
 
     // rotacje
     player.rotation += player.angularVelocity;
     player.angularVelocity *= 0.95;
 
-    // kolizje z platformami
+    // kolizje z platformami (proste)
     player.grounded = false;
     for (let p of platforms) {
       const withinX = player.x + player.r > p.x && player.x - player.r < p.x + p.w;
@@ -174,24 +168,13 @@
       }
     }
 
-    // kolizje z kolcami (obstacles)
-    for (let o of obstacles) {
-      if (player.x + player.r > o.x && player.x - player.r < o.x + o.w) {
-        if (player.y + player.r > o.y) {
-          respawn();
-          return;
-        }
-      }
-    }
-
-    // usuwaj platformy/obiekty które są już bardzo poniżej ekranu
-    while (platforms.length && platforms[0].y - camera.y > H + 300) {
+    // usuwaj platformy które są już bardzo poniżej ekranu
+    while (platforms.length && platforms[0].y - cam.y > H + 300) {
       platforms.shift();
     }
-    obstacles = obstacles.filter(o => !(o.y - camera.y > H + 300));
 
     // generuj nowe platformy u góry (gdy najwyższa zbliża się do widoku)
-    while (platforms.length === 0 || platforms[platforms.length - 1].y - camera.y > -320) {
+    while (platforms.length === 0 || platforms[platforms.length - 1].y - cam.y > -320) {
       const lastY = platforms.length ? platforms[platforms.length - 1].y : H - 40;
       const newY = lastY - (Math.random() * (gapMax - gapMin) + gapMin);
       createPlatformAt(newY);
@@ -201,13 +184,13 @@
     player.vx *= friction;
 
     // śmierć przy upadku pod ekran
-    if (player.y - camera.y > H + 120) {
+    if (player.y - cam.y > H + 120) {
       respawn();
       return;
     }
 
-    // wynik
-    score = Math.max(score, Math.floor(player.y)); // można użyć camera.y, używam player.y żeby wynik odczytywał jak wysoko doszedłeś
+    // wynik - wysokość gracza (możesz zmienić na camera.y jeśli wolisz)
+    score = Math.max(score, Math.floor(player.y));
   }
 
   function draw() {
@@ -224,7 +207,7 @@
     ctx.strokeStyle = 'rgba(0,0,0,0.08)';
     ctx.lineWidth = 1;
     for (let p of platforms) {
-      const sy = p.y - camera.y;
+      const sy = p.y - cam.y;
       if (sy < -300 || sy > H + 300) continue;
       ctx.beginPath();
       roundRect(ctx, p.x, sy, p.w, p.h, 6);
@@ -232,29 +215,9 @@
       ctx.stroke();
     }
 
-    // rysuj kolce
-    for (let o of obstacles) {
-      const sy = o.y - camera.y;
-      if (sy < -200 || sy > H + 200) continue;
-      if (o.type === 'spike') {
-        const spikesCount = Math.max(1, Math.floor(o.w / 8));
-        const sw = o.w / spikesCount;
-        ctx.fillStyle = '#222';
-        for (let i = 0; i < spikesCount; i++) {
-          const sx = o.x + i * sw;
-          ctx.beginPath();
-          ctx.moveTo(sx, sy + o.h);
-          ctx.lineTo(sx + sw / 2, sy);
-          ctx.lineTo(sx + sw, sy + o.h);
-          ctx.closePath();
-          ctx.fill();
-        }
-      }
-    }
-
     // cień gracza
     const sx = player.x;
-    const sy = player.y - camera.y;
+    const sy = player.y - cam.y;
     ctx.beginPath();
     ctx.ellipse(sx, sy + player.r + 8, player.r * 1.05, player.r * 0.45, 0, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(0,0,0,0.12)';
@@ -284,13 +247,13 @@
     ctx.textAlign = 'left';
     ctx.fillText('Score: ' + Math.floor(score), 12, 24);
 
-    if (camera.y < 200) {
+    if (cam.y < 200) {
       ctx.fillStyle = 'rgba(5,50,90,0.06)';
       ctx.fillRect(8, 32, W - 16, 48);
       ctx.fillStyle = '#064e77';
       ctx.font = '14px system-ui, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Celem jest iść w górę. Uważaj na kolce!', W/2, 60);
+      ctx.fillText('Celem jest iść w górę. Startujesz na środku platformy.', W/2, 60);
     }
 
     if (deadTimer > 0) {
